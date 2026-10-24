@@ -1,0 +1,12 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Replace this placeholder with the Firebase Auth UID of the one admin account.
+    function isAdmin() {
+      return request.auth != null && request.auth.uid == "ccos2ykPY2SIulqEdfHGzjwgOqd2";
+    }
+    match /{document=**} {
+      allow read, write: if isAdmin();
+    }
+  }
+}
