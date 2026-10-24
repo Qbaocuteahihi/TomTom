@@ -665,6 +665,7 @@ function App() {
 
   const [employees, setEmployees] = useState([]);
   const [attendance, setAttendance] = useState([]);
+  const [payrollAdjustments, setPayrollAdjustments] = useState([]);
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [month, setMonth] = useState(monthKey());
 
@@ -701,6 +702,7 @@ function App() {
     if (!user || !db) {
       setEmployees([]);
       setAttendance([]);
+      setPayrollAdjustments([]);
       return;
     }
 
@@ -725,6 +727,17 @@ function App() {
         (snap) =>
           setAttendance(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
         (err) => setNotice(`Không đọc được chấm công: ${err.message}`),
+      ),
+    );
+
+    unsubs.push(
+      onSnapshot(
+        collection(db, "payrollAdjustments"),
+        (snap) =>
+          setPayrollAdjustments(
+            snap.docs.map((d) => ({ id: d.id, ...d.data() })),
+          ),
+        (err) => setNotice(`Không đọc được điều chỉnh lương: ${err.message}`),
       ),
     );
 
@@ -785,6 +798,17 @@ function App() {
     [attendance],
   );
 
+  const payrollAdjustmentsByKey = useMemo(
+    () =>
+      new Map(
+        payrollAdjustments.map((adjustment) => [
+          `${adjustment.employeeId}|${adjustment.month}`,
+          adjustment,
+        ]),
+      ),
+    [payrollAdjustments],
+  );
+
   const totals = useMemo(() => {
     let hours = 0;
     let pay = 0;
@@ -800,28 +824,78 @@ function App() {
       bonus += Number(a.bonus || 0);
     }
 
+    for (const employee of activeEmployees) {
+      const adjustment = payrollAdjustmentsByKey.get(`${employee.id}|${month}`);
+      late += Number(adjustment?.deduction || 0);
+      allowance += Number(adjustment?.allowance || 0);
+      bonus += Number(adjustment?.bonus || 0);
+    }
+
+    const autoTotal = pay - late + allowance + bonus;
+    const manualTotalDelta = activeEmployees.reduce((sum, employee) => {
+      const adjustment = payrollAdjustmentsByKey.get(
+        `${employee.id}|${month}`,
+      );
+      const hasManualTotal =
+        adjustment?.manualNetPay !== undefined &&
+        adjustment?.manualNetPay !== null &&
+        adjustment?.manualNetPay !== "";
+
+      if (!hasManualTotal) return sum;
+
+      const rows = monthAttendance.filter(
+        (attendanceRecord) => attendanceRecord.employeeId === employee.id,
+      );
+      const autoEmployeeTotal =
+        rows.reduce((value, record) => value + Number(record.basePay || 0), 0) -
+        rows.reduce(
+          (value, record) => value + Number(record.lateDeduction || 0),
+          0,
+        ) -
+        Number(adjustment?.deduction || 0) +
+        rows.reduce((value, record) => value + Number(record.allowance || 0), 0) +
+        Number(adjustment?.allowance || 0) +
+        rows.reduce((value, record) => value + Number(record.bonus || 0), 0) +
+        Number(adjustment?.bonus || 0);
+
+      return sum + Number(adjustment.manualNetPay) - autoEmployeeTotal;
+    }, 0);
+
     return {
       hours,
       pay,
       late,
       allowance,
       bonus,
-      total: pay - late + allowance + bonus,
+      total: autoTotal + manualTotalDelta,
     };
-  }, [monthAttendance]);
+  }, [activeEmployees, month, monthAttendance, payrollAdjustmentsByKey]);
 
   const employeeTotals = (employeeId) => {
     const rows = monthAttendance.filter((a) => a.employeeId === employeeId);
+    const adjustment = payrollAdjustmentsByKey.get(`${employeeId}|${month}`);
 
     const hours = rows.reduce((s, a) => s + Number(a.hours || 0), 0);
     const base = rows.reduce((s, a) => s + Number(a.basePay || 0), 0);
-    const fine = rows.reduce((s, a) => s + Number(a.lateDeduction || 0), 0);
-    const allowance = rows.reduce((s, a) => s + Number(a.allowance || 0), 0);
-    const bonus = rows.reduce((s, a) => s + Number(a.bonus || 0), 0);
+    const fine =
+      rows.reduce((s, a) => s + Number(a.lateDeduction || 0), 0) +
+      Number(adjustment?.deduction || 0);
+    const allowance =
+      rows.reduce((s, a) => s + Number(a.allowance || 0), 0) +
+      Number(adjustment?.allowance || 0);
+    const bonus =
+      rows.reduce((s, a) => s + Number(a.bonus || 0), 0) +
+      Number(adjustment?.bonus || 0);
     const payableHours = Math.max(
       0,
       hours - rows.reduce((s, a) => s + Number(a.penaltyHours || 0), 0),
     );
+
+    const autoTotal = base - fine + allowance + bonus;
+    const hasManualTotal =
+      adjustment?.manualNetPay !== undefined &&
+      adjustment?.manualNetPay !== null &&
+      adjustment?.manualNetPay !== "";
 
     return {
       hours,
@@ -830,7 +904,9 @@ function App() {
       fine,
       allowance,
       bonus,
-      total: base - fine + allowance + bonus,
+      autoTotal,
+      manualNetPay: hasManualTotal ? Number(adjustment.manualNetPay) : null,
+      total: hasManualTotal ? Number(adjustment.manualNetPay) : autoTotal,
       days: rows.filter((a) => Number(a.hours || 0) > 0).length,
     };
   };
@@ -871,6 +947,36 @@ function App() {
       },
       { merge: true },
     );
+  };
+
+  const savePayrollAdjustment = async (employeeId, field, value) => {
+    if (!db) {
+      showNotice("Firebase chưa được cấu hình.");
+      return;
+    }
+
+    const id = `${month}_${employeeId}`;
+    const current = payrollAdjustmentsByKey.get(`${employeeId}|${month}`) || {};
+
+    try {
+      await setDoc(
+        doc(db, "payrollAdjustments", id),
+        {
+          ...current,
+          id,
+          employeeId,
+          month,
+          [field]:
+            field === "manualNetPay" && String(value).trim() === ""
+              ? null
+              : Math.max(0, Number(value || 0)),
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true },
+      );
+    } catch (e) {
+      showNotice(`Không lưu được điều chỉnh lương: ${e.message}`);
+    }
   };
 
   const saveEmployee = async (e) => {
@@ -1141,6 +1247,21 @@ function App() {
     }
   };
 
+  const saveAttendanceNote = async (employee, day, record, value) => {
+    try {
+      await saveAttendance({
+        ...(record || {}),
+        employeeId: employee.id,
+        employeeName: employee.name,
+        date: day,
+        notes: value.trim(),
+        status: record?.status || "present",
+      });
+    } catch (e) {
+      showNotice(`Không lưu được ghi chú: ${e.message}`);
+    }
+  };
+
   const markOff = async (employee, day) => {
     const existing = attendanceByKey.get(`${employee.id}|${day}`) || {};
 
@@ -1167,6 +1288,45 @@ function App() {
       showNotice(e.message);
     }
   };
+
+  useEffect(() => {
+    if (!db || !user) return;
+
+    const today = dateKey();
+    const missingPastShifts = monthDays(month).flatMap((day) =>
+      day >= today
+        ? []
+        : activeEmployees
+            .filter((employee) => !attendanceByKey.has(`${employee.id}|${day}`))
+            .map((employee) => ({
+              ...employee,
+              date: day,
+            })),
+    );
+
+    if (missingPastShifts.length === 0) return;
+
+    Promise.all(
+      missingPastShifts.map((employee) =>
+        saveAttendance({
+          employeeId: employee.id,
+          employeeName: employee.name,
+          date: employee.date,
+          checkIn: "",
+          checkOut: "",
+          lateMinutes: 0,
+          lateExcused: false,
+          lateReason: "",
+          allowance: 0,
+          bonus: 0,
+          status: "off",
+          notes: "OFF",
+        }),
+      ),
+    ).catch((error) => {
+      showNotice(`Không tự động đánh dấu OFF: ${error.message}`);
+    });
+  }, [activeEmployees, attendanceByKey, db, month, user]);
 
   if (!authReady) {
     return <div className="loading-screen">Đang kiểm tra phiên đăng nhập…</div>;
@@ -1200,20 +1360,6 @@ function App() {
     const d = new Date(y, m - 1 + delta, 1);
     setMonth(monthKey(d));
   };
-
-  const monthlyPayrollRows = monthDays(month).flatMap((day) =>
-    employees
-      .filter(
-        (employee) =>
-          payrollEmployeeFilter === "all" ||
-          employee.id === payrollEmployeeFilter,
-      )
-      .map((employee) => ({
-        day,
-        employee,
-        attendance: attendanceByKey.get(`${employee.id}|${day}`),
-      })),
-  );
 
   return (
     <div className="app-shell">
@@ -1373,78 +1519,6 @@ function App() {
               <div className="panel">
                 <div className="panel-heading">
                   <div>
-                    <h3>Chấm công gần đây</h3>
-                    <p className="muted">Các ca mới nhất trong tháng</p>
-                  </div>
-
-                  <button
-                    className="text-button"
-                    onClick={() => setTab("attendance")}
-                  >
-                    Xem bảng <ChevronRight size={16} />
-                  </button>
-                </div>
-
-                {monthAttendance
-                  .slice()
-                  .sort((a, b) => (b.date || "").localeCompare(a.date || ""))
-                  .slice(0, 7).length === 0 ? (
-                  <Empty
-                    icon={CalendarDays}
-                    title="Chưa có dữ liệu chấm công"
-                    text="Nhập ca trực tiếp trong bảng chấm công để bắt đầu theo dõi."
-                  />
-                ) : (
-                  <div className="table-wrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Nhân viên</th>
-                          <th>Ngày</th>
-                          <th>Giờ vào – ra</th>
-                          <th>Giờ công</th>
-                          <th>Trạng thái</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {monthAttendance
-                          .slice()
-                          .sort((a, b) =>
-                            (b.date || "").localeCompare(a.date || ""),
-                          )
-                          .slice(0, 7)
-                          .map((a) => (
-                            <tr key={a.id}>
-                              <td>
-                                <b>
-                                  {a.employeeName ||
-                                    employees.find((e) => e.id === a.employeeId)
-                                      ?.name ||
-                                    "Nhân viên"}
-                                </b>
-                              </td>
-                              <td>{dayLabel(a.date)}</td>
-                              <td>
-                                {a.checkIn || "—"} – {a.checkOut || "—"}
-                              </td>
-                              <td>{Number(a.hours || 0).toFixed(1)}</td>
-                              <td>
-                                <Status
-                                  status={a.status}
-                                  complete={Boolean(a.checkIn && a.checkOut)}
-                                />
-                              </td>
-                            </tr>
-                          ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-
-              <div className="panel">
-                <div className="panel-heading">
-                  <div>
                     <h3>Tổng lương theo nhân viên</h3>
                     <p className="muted">Tháng đang chọn</p>
                   </div>
@@ -1568,7 +1642,7 @@ function App() {
                 actionText="Thêm nhân viên"
               />
             ) : (
-              <div className="panel attendance-panel">
+              <div className="panel attendance-panel compact-sheet-only">
                 <div className="table-wrap attendance-wrap">
                   <table className="attendance-table">
                     <thead>
@@ -1680,13 +1754,72 @@ function App() {
               </div>
             )}
 
-            <div className="panel monthly-payroll-panel">
+            <div className="panel monthly-payroll-panel payroll-summary-panel">
               <div className="panel-heading">
                 <div>
-                  <h3>Chi tiết lương tháng</h3>
+                  <h3>Tổng hợp lương tháng</h3>
                   <p className="muted">
-                    Lọc theo nhân viên để đối chiếu nhanh từng ngày: OFF, giờ
-                    công, đi trễ, phụ cấp và ghi chú.
+                    Tổng hợp nhanh theo nhân viên; các khoản điều chỉnh có thể
+                    sửa trực tiếp.
+                  </p>
+                </div>
+              </div>
+
+              <div className="table-wrap">
+                <table className="monthly-payroll-table payroll-summary-table">
+                  <thead>
+                    <tr>
+                      <th>Nhân viên</th>
+                      <th>Ngày công</th>
+                      <th>Giờ công</th>
+                      <th>Giờ tính lương</th>
+                      <th>Trừ đi trễ</th>
+                      <th>Trừ thêm</th>
+                      <th>Phụ cấp</th>
+                      <th>Thưởng</th>
+                      <th>Tổng lương</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {employees
+                      .filter(
+                        (employee) =>
+                          payrollEmployeeFilter === "all" ||
+                          employee.id === payrollEmployeeFilter,
+                      )
+                      .map((employee) => {
+                        const total = employeeTotals(employee.id);
+                        const adjustment =
+                          payrollAdjustmentsByKey.get(
+                            `${employee.id}|${month}`,
+                          ) || {};
+
+                        return (
+                          <tr key={`summary-${employee.id}`}>
+                            <td><b>{employee.name}</b></td>
+                            <td>{total.days}</td>
+                            <td>{total.hours.toFixed(2)}</td>
+                            <td>{total.payableHours.toFixed(2)}</td>
+                            <td>{money(total.fine - Number(adjustment.deduction || 0))}</td>
+                            <td>{adjustment.deduction ? money(adjustment.deduction) : "—"}</td>
+                            <td>{adjustment.allowance ? money(adjustment.allowance) : "—"}</td>
+                            <td>{adjustment.bonus ? money(adjustment.bonus) : "—"}</td>
+                            <td><b className="payroll-total">{money(total.total)}</b></td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="panel monthly-payroll-panel payslip-panel">
+              <div className="panel-heading">
+                <div>
+                  <h3>Tổng hợp lương tháng</h3>
+                  <p className="muted">
+                    Bảng gồm tổng tháng và chi tiết từng ngày. Bấm vào phụ cấp,
+                    thưởng, trừ thêm hoặc thực nhận nhập tay để chỉnh sửa.
                   </p>
                 </div>
                 <div className="payroll-filter">
@@ -1711,73 +1844,127 @@ function App() {
                   <thead>
                     <tr>
                       <th>Ngày</th>
-                      <th>Nhân viên</th>
                       <th>Giờ công</th>
-                      <th>Giờ tính lương</th>
-                      <th>Đi trễ</th>
-                      <th>Trừ lương</th>
-                      <th>Phụ cấp</th>
-                      <th>Thưởng</th>
                       <th>Ghi chú</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {monthlyPayrollRows.map(
-                      ({ day, employee, attendance: a }) => (
-                        <tr
-                          key={`${employee.id}-${day}`}
-                          className={a?.allowance ? "has-allowance-row" : ""}
-                        >
-                          <td>
-                            <b>{dayLabel(day)}</b>
-                          </td>
-                          <td>{employee.name}</td>
-                          <td>
-                            {a?.status === "off" ? (
-                              <span className="off-badge">OFF</span>
-                            ) : a ? (
-                              `${Number(a.hours || 0).toFixed(1)} giờ`
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                          <td>
-                            {a
-                              ? `${Math.max(0, Number(a.hours || 0) - Number(a.penaltyHours || 0)).toFixed(1)} giờ`
-                              : "—"}
-                          </td>
-                          <td>
-                            {Number(a?.lateMinutes || 0) > 0 ? (
-                              <span
-                                className={`late-badge ${a.lateExcused ? "late-excused" : ""}`}
-                              >
-                                {a.lateExcused
-                                  ? "Đã báo trước"
-                                  : `${a.lateMinutes} phút · -${a.penaltyHours || 0} giờ`}
-                              </span>
-                            ) : (
-                              "—"
-                            )}
-                          </td>
-                          <td>
-                            {a?.lateDeduction ? money(a.lateDeduction) : "—"}
-                          </td>
-                          <td className={a?.allowance ? "allowance-value" : ""}>
-                            {a?.allowance ? money(a.allowance) : "—"}
-                          </td>
-                          <td>{a?.bonus ? money(a.bonus) : "—"}</td>
-                          <td className="monthly-note">
-                            {[a?.notes, a?.lateReason]
-                              .filter(Boolean)
-                              .join(" · ") || "—"}
-                          </td>
-                        </tr>
-                      ),
-                    )}
-                    {monthlyPayrollRows.length === 0 && (
+                    {employees
+                      .filter(
+                        (employee) =>
+                          payrollEmployeeFilter === "all" ||
+                          employee.id === payrollEmployeeFilter,
+                      )
+                      .map((employee) => {
+                        const total = employeeTotals(employee.id);
+                        const adjustment =
+                          payrollAdjustmentsByKey.get(
+                            `${employee.id}|${month}`,
+                          ) || {};
+
+                        const employeeRows = monthDays(month).map((day) => ({
+                          day,
+                          attendance: attendanceByKey.get(`${employee.id}|${day}`),
+                        }));
+
+                        return (
+                          <React.Fragment key={employee.id}>
+                            <tr className="payslip-title-row">
+                              <td colSpan="3">
+                                <b>LƯƠNG THÁNG {month.split("-")[1]}</b>
+                                <span>{employee.name}</span>
+                              </td>
+                            </tr>
+                            <tr className="payslip-info-row">
+                              <td><b>Lương theo giờ</b></td>
+                              <td><b>{money(employee.hourlyRate || settings.defaultHourlyRate)}</b></td>
+                              <td>Ghi chú</td>
+                            </tr>
+                            <tr className="payslip-info-row">
+                              <td><b>Lương chính thức</b></td>
+                              <td><b>{money(total.autoTotal)}</b></td>
+                              <td />
+                            </tr>
+                            {employeeRows.map(({ day, attendance: a }) => (
+                              <tr key={`${employee.id}-${day}`}>
+                                <td><b>{dayLabel(day)}</b></td>
+                                <td>
+                                  {a?.status === "off"
+                                    ? ""
+                                    : a
+                                      ? Number(a.hours || 0).toFixed(2)
+                                      : "—"}
+                                </td>
+                                <td className="monthly-note payslip-note">
+                                  <PayslipNoteCell
+                                    value={a?.notes || ""}
+                                    onSave={(value) =>
+                                      saveAttendanceNote(employee, day, a, value)
+                                    }
+                                  />
+                                </td>
+                              </tr>
+                            ))}
+                            <tr className="payslip-total-row">
+                              <td><b>Tổng giờ công</b></td>
+                              <td><b>{total.hours.toFixed(2)}</b></td>
+                              <td />
+                            </tr>
+                            <tr className="payslip-total-row">
+                              <td><b>Thành tiền</b></td>
+                              <td><b>{money(total.base)}</b></td>
+                              <td />
+                            </tr>
+                            <tr className="payslip-total-row">
+                              <td><b>Tiền phạt</b></td>
+                              <td>
+                                <PayrollEditCell
+                                  value={adjustment.deduction}
+                                  placeholder={money(total.fine)}
+                                  onSave={(value) =>
+                                    savePayrollAdjustment(employee.id, "deduction", value)
+                                  }
+                                />
+                              </td>
+                              <td />
+                            </tr>
+                            <tr className="payslip-total-row">
+                              <td><b>Phụ cấp / thưởng</b></td>
+                              <td>
+                                <PayrollEditCell
+                                  value={adjustment.allowance}
+                                  placeholder="0"
+                                  onSave={(value) =>
+                                    savePayrollAdjustment(employee.id, "allowance", value)
+                                  }
+                                />
+                              </td>
+                              <td />
+                            </tr>
+                            <tr className="payslip-grand-total-row">
+                              <td><b>Tổng lương</b></td>
+                              <td>
+                                <PayrollEditCell
+                                  value={total.manualNetPay}
+                                  placeholder={money(total.autoTotal)}
+                                  onSave={(value) =>
+                                    savePayrollAdjustment(employee.id, "manualNetPay", value)
+                                  }
+                                />
+                              </td>
+                              <td>Nhập tay để thay số tự động</td>
+                            </tr>
+                          </React.Fragment>
+                        );
+                      })}
+                    {employees.filter(
+                      (employee) =>
+                        payrollEmployeeFilter === "all" ||
+                        employee.id === payrollEmployeeFilter,
+                    ).length === 0 && (
                       <tr>
-                        <td colSpan="9" className="empty-table-cell">
-                          Chưa có dữ liệu trong tháng này.
+                        <td colSpan="3" className="empty-table-cell">
+                          Chưa có nhân viên phù hợp.
                         </td>
                       </tr>
                     )}
@@ -2179,6 +2366,35 @@ function Empty({ icon: Icon, title, text, action, actionText }) {
         </button>
       )}
     </div>
+  );
+}
+
+function PayrollEditCell({ value, placeholder, onSave }) {
+  return (
+    <input
+      className="payroll-edit-input"
+      type="number"
+      min="0"
+      defaultValue={value === undefined || value === null ? "" : value}
+      placeholder={placeholder}
+      onBlur={(e) => {
+        const nextValue = e.target.value.trim() === "" ? "" : Math.max(0, Number(e.target.value));
+        e.target.value = nextValue;
+        onSave(nextValue);
+      }}
+      aria-label="Điều chỉnh lương"
+    />
+  );
+}
+
+function PayslipNoteCell({ value, onSave }) {
+  return (
+    <input
+      className="payslip-note-input"
+      defaultValue={value}
+      onBlur={(event) => onSave(event.target.value)}
+      aria-label="Ghi chú ngày"
+    />
   );
 }
 
