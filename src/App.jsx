@@ -190,6 +190,7 @@ const getContrastColor = (hex) => {
 
 function Schedule({ db, employees, onNotice }) {
   const [week, setWeek] = useState(startOfWeek(dateKey()));
+  const [captureMode, setCaptureMode] = useState(false);
   const [assignments, setAssignments] = useState([]);
   const [cleaningAssignments, setCleaningAssignments] = useState([]);
   const [cleaningTasks, setCleaningTasks] = useState(CLEANING_TASKS);
@@ -403,7 +404,9 @@ function Schedule({ db, employees, onNotice }) {
   };
 
   return (
-    <section className="page-content schedule-page">
+    <section
+      className={`page-content schedule-page${captureMode ? " capture-mode" : ""}`}
+    >
       <div className="section-toolbar">
         <div>
           <h2>Xếp lịch nhân viên</h2>
@@ -413,31 +416,40 @@ function Schedule({ db, employees, onNotice }) {
         </div>
         <div className="schedule-week-controls">
           <button
-            className="icon-button"
+            className="icon-button schedule-navigation-control"
             onClick={() => setWeek(shiftDate(week, -7))}
             aria-label="Tuần trước"
           >
             <ChevronLeft size={18} />
           </button>
           <input
+            className="schedule-navigation-control"
             type="date"
             value={week}
             onChange={(event) => setWeek(startOfWeek(event.target.value))}
             aria-label="Chọn tuần"
           />
           <button
-            className="icon-button"
+            className="icon-button schedule-navigation-control"
             onClick={() => setWeek(shiftDate(week, 7))}
             aria-label="Tuần sau"
           >
             <ChevronRight size={18} />
           </button>
           <button
-            className="btn secondary"
+            className="btn secondary schedule-navigation-control"
             onClick={() => setWeek(startOfWeek(dateKey()))}
             disabled={week === startOfWeek(dateKey())}
           >
             Tuần này
+          </button>
+          <button
+            className={`btn ${captureMode ? "primary" : "secondary"}`}
+            onClick={() => setCaptureMode((current) => !current)}
+            aria-pressed={captureMode}
+            type="button"
+          >
+            {captureMode ? "Thoát chế độ gửi" : "Chế độ gửi nhân viên"}
           </button>
         </div>
       </div>
@@ -495,6 +507,7 @@ function Schedule({ db, employees, onNotice }) {
                             <div className="schedule-person" key={assignment.id}>
                               <span>{assignment.employeeName}</span>
                               <button
+                                className="schedule-edit-control"
                                 type="button"
                                 onClick={() => removeFromSchedule(assignment)}
                                 aria-label={`Bỏ ${assignment.employeeName}`}
@@ -504,6 +517,7 @@ function Schedule({ db, employees, onNotice }) {
                             </div>
                           ))}
                           <select
+                            className="schedule-edit-control"
                             value=""
                             disabled={Boolean(saving)}
                             onChange={(event) =>
@@ -537,6 +551,7 @@ function Schedule({ db, employees, onNotice }) {
                                 )?.label || cleaning.taskLabel}
                               </span>
                               <button
+                                className="schedule-edit-control"
                                 type="button"
                                 onClick={() => removeCleaning(cleaning)}
                                 aria-label="Bỏ lịch vệ sinh"
@@ -546,13 +561,13 @@ function Schedule({ db, employees, onNotice }) {
                             </div>
                           ) : null}
                           <select
+                            className="schedule-edit-control cleaning-select"
                             value=""
                             disabled={Boolean(saving)}
                             onChange={(event) =>
                               saveCleaning(day, shift, event.target.value)
                             }
                             aria-label={`Thêm lịch vệ sinh ${shift.name} ngày ${day}`}
-                            className="cleaning-select"
                           >
                             <option value="">+ Lịch vệ sinh</option>
                             {cleaningTasks.map((task) => (
@@ -586,7 +601,10 @@ function Schedule({ db, employees, onNotice }) {
             <div
               className="cleaning-legend-item"
               key={task.id}
-              style={{ backgroundColor: task.color, color: task.text }}
+              style={{
+                backgroundColor: task.color,
+                color: task.text,
+              }}
             >
               <span />
               {task.label}
