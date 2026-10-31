@@ -80,6 +80,7 @@ export default function ShiftAttendance({ db, employees, settings, onNotice }) {
   const [date, setDate] = useState(dateKey());
   const [assignments, setAssignments] = useState([]);
   const [selected, setSelected] = useState({});
+  const [deductions, setDeductions] = useState({});
 
   const changeDate = (delta) => {
     const current = new Date(`${date}T12:00:00`);
@@ -133,6 +134,16 @@ export default function ShiftAttendance({ db, employees, settings, onNotice }) {
       return;
     }
 
+    const deduction = Number(deductions[shift.id] || 0);
+    if (
+      !Number.isFinite(deduction) ||
+      deduction < 0 ||
+      deduction > shift.hours
+    ) {
+      onNotice?.(`Số giờ trừ phải từ 0 đến ${shift.hours} giờ.`);
+      return;
+    }
+
     const inShift = assignments.filter((a) => a.shiftId === shift.id);
     if (inShift.length >= MAX_EMPLOYEES) {
       onNotice?.(`Mỗi ca tối đa ${MAX_EMPLOYEES} nhân viên.`);
@@ -155,7 +166,9 @@ export default function ShiftAttendance({ db, employees, settings, onNotice }) {
         shiftName: shift.name,
         start: shift.start,
         end: shift.end,
-        hours: shift.hours,
+        scheduledHours: shift.hours,
+        hours: shift.hours - deduction,
+        deductionHours: deduction,
         employeeId,
         employeeName: employee.name,
         hourlyRate: Number(
@@ -167,6 +180,7 @@ export default function ShiftAttendance({ db, employees, settings, onNotice }) {
         updatedAt: new Date().toISOString(),
       });
       await syncDailyAttendance(employeeId);
+      setDeductions((prev) => ({ ...prev, [shift.id]: "" }));
 
       onNotice?.(`Đã xếp ${employee.name} vào ${shift.name}.`);
     } catch (error) {
@@ -357,6 +371,24 @@ export default function ShiftAttendance({ db, employees, settings, onNotice }) {
                     </option>
                   ))}
                 </select>
+                <label className="shift-deduction">
+                  <span>Trừ giờ</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max={shift.hours}
+                    step="0.5"
+                    value={deductions[shift.id] ?? ""}
+                    placeholder="0"
+                    onChange={(e) =>
+                      setDeductions((prev) => ({
+                        ...prev,
+                        [shift.id]: e.target.value,
+                      }))
+                    }
+                    aria-label={`Số giờ trừ của ${shift.name}`}
+                  />
+                </label>
               </div>
 
               <div className="shift-employee-list">
@@ -369,7 +401,11 @@ export default function ShiftAttendance({ db, employees, settings, onNotice }) {
                         <div>
                           <b>{row.employeeName}</b>
                           <small>
-                            {row.hours} giờ · {money(row.hourlyRate)}/giờ
+                            {row.hours} giờ
+                            {Number(row.deductionHours || 0) > 0 &&
+                              ` (trừ ${Number(row.deductionHours)} giờ)`}
+                            {" · "}
+                            {money(row.hourlyRate)}/giờ
                           </small>
                         </div>
                         <button

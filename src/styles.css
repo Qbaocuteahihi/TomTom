@@ -2080,6 +2080,7 @@ td b {
 
 .shift-add {
   display: flex;
+  align-items: flex-end;
   gap: 8px;
   padding: 13px;
   border-bottom: 1px solid #edf0ef;
@@ -2097,6 +2098,31 @@ td b {
   font-size: 11px;
 }
 .shift-add select:focus {
+  border-color: var(--shift-color, var(--green));
+  box-shadow: 0 0 0 3px #2457c51a;
+}
+
+.shift-deduction {
+  display: flex;
+  flex: 0 0 72px;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.shift-deduction input {
+  width: 100%;
+  padding: 9px 7px;
+  border: 1px solid #dfe7e5;
+  border-radius: 8px;
+  outline-color: #8cc8be;
+  background: #fff;
+  font-size: 11px;
+}
+
+.shift-deduction input:focus {
   border-color: var(--shift-color, var(--green));
   box-shadow: 0 0 0 3px #2457c51a;
 }

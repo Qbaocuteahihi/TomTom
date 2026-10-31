@@ -15,7 +15,7 @@ import {
   setDoc,
   where,
 } from "firebase/firestore";
-import * as XLSX from "xlsx";
+import * as XLSX from "xlsx-js-style";
 import {
   Activity,
   BadgeDollarSign,
@@ -1144,8 +1144,9 @@ function App() {
   };
 
   const exportExcel = () => {
-    const days = monthDays(month);
-    const rows = [];
+    try {
+      const days = monthDays(month);
+      const rows = [];
 
     for (const employee of employees) {
       if (selectedEmployee !== "all" && employee.id !== selectedEmployee)
@@ -1197,14 +1198,101 @@ function App() {
       rows.push(row);
     }
 
+    const border = {
+      top: { style: "thin", color: { rgb: "D8E3DF" } },
+      bottom: { style: "thin", color: { rgb: "D8E3DF" } },
+      left: { style: "thin", color: { rgb: "D8E3DF" } },
+      right: { style: "thin", color: { rgb: "D8E3DF" } },
+    };
+    const titleStyle = {
+      font: { name: "Arial", sz: 16, bold: true, color: { rgb: "FFFFFF" } },
+      fill: { fgColor: { rgb: "176B5B" } },
+      alignment: { horizontal: "center", vertical: "center" },
+      border,
+    };
+    const subtitleStyle = {
+      font: { name: "Arial", sz: 10, italic: true, color: { rgb: "42645D" } },
+      fill: { fgColor: { rgb: "E8F3F0" } },
+      alignment: { horizontal: "left", vertical: "center" },
+      border,
+    };
+    const headerStyle = {
+      font: { name: "Arial", sz: 10, bold: true, color: { rgb: "FFFFFF" } },
+      fill: { fgColor: { rgb: "238B76" } },
+      alignment: { horizontal: "center", vertical: "center", wrapText: true },
+      border,
+    };
+    const bodyStyle = {
+      font: { name: "Arial", sz: 10, color: { rgb: "20332F" } },
+      alignment: { vertical: "center" },
+      border,
+    };
+    const applySheetLayout = (sheet, columnCount, headerRow) => {
+      const range = XLSX.utils.decode_range(sheet["!ref"]);
+      for (let rowIndex = 0; rowIndex <= range.e.r; rowIndex += 1) {
+        for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
+          const address = XLSX.utils.encode_cell({
+            r: rowIndex,
+            c: columnIndex,
+          });
+          if (!sheet[address]) sheet[address] = { t: "s", v: "" };
+          sheet[address].s =
+            rowIndex === 0
+              ? titleStyle
+              : rowIndex === 1
+                ? subtitleStyle
+                : rowIndex === headerRow
+                  ? headerStyle
+                  : bodyStyle;
+        }
+      }
+      sheet["!freeze"] = { xSplit: 2, ySplit: headerRow + 1 };
+      sheet["!autofilter"] = {
+        ref: `${XLSX.utils.encode_cell({ r: headerRow, c: 0 })}:${XLSX.utils.encode_cell({ r: range.e.r, c: columnCount - 1 })}`,
+      };
+      sheet["!rows"] = [{ hpt: 28 }, { hpt: 20 }, { hpt: 25 }];
+    };
+
     const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(rows);
-
-    ws["!cols"] = Object.keys(rows[0] || { "Nhân viên": "" }).map((k) => ({
-      wch: Math.min(24, Math.max(12, k.length + 3)),
+    const columns = Object.keys(rows[0] || { "Nhân viên": "" });
+    const detailData = [
+      [`BẢNG CHẤM CÔNG TOM TOM - THÁNG ${month.split("-").reverse().join("/")}`],
+      [
+        `Nhân viên: ${selectedEmployee === "all" ? "Tất cả" : employees.find((e) => e.id === selectedEmployee)?.name || ""} · Xuất ngày ${new Date().toLocaleDateString("vi-VN")}`,
+      ],
+      columns,
+      ...rows.map((row) => columns.map((column) => row[column])),
+    ];
+    const ws = XLSX.utils.aoa_to_sheet(detailData);
+    const detailLastRow = detailData.length - 1;
+    const detailTotalColumns = columns.length;
+    ws["!merges"] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: detailTotalColumns - 1 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: detailTotalColumns - 1 } },
+    ];
+    ws["!cols"] = columns.map((column, index) => ({
+      wch:
+        index === 0
+          ? 24
+          : column === "Ghi chú" || column === "Chi tiết đi trễ"
+            ? 38
+            : column.length <= 5
+              ? 11
+              : 16,
     }));
-
-    XLSX.utils.book_append_sheet(wb, ws, "Bang cham cong");
+    applySheetLayout(ws, detailTotalColumns, 2);
+    for (let columnIndex = 1; columnIndex < detailTotalColumns; columnIndex += 1) {
+      const columnName = columns[columnIndex];
+      for (let rowIndex = 3; rowIndex <= detailLastRow; rowIndex += 1) {
+        const cell = ws[XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex })];
+        if (columnName === "Lương/giờ" || columnName.includes("Lương") || columnName === "Trừ đi trễ" || columnName === "Phụ cấp" || columnName === "Thưởng" || columnName === "Tổng lương") {
+          cell.z = '#,##0 "đ"';
+        } else if (columnName === "Tổng giờ công" || /^\d{2}\/\d{2}$/.test(columnName)) {
+          cell.z = "0.0";
+        }
+      }
+    }
+    XLSX.utils.book_append_sheet(wb, ws, "Bảng chấm công");
 
     const summary = employees
       .filter((e) => selectedEmployee === "all" || e.id === selectedEmployee)
@@ -1223,14 +1311,37 @@ function App() {
         };
       });
 
-    XLSX.utils.book_append_sheet(
-      wb,
-      XLSX.utils.json_to_sheet(summary),
-      "Tong hop luong",
-    );
+    const summaryColumns = Object.keys(summary[0] || { "Nhân viên": "" });
+    const summaryData = [
+      [`TỔNG HỢP LƯƠNG TOM TOM - THÁNG ${month.split("-").reverse().join("/")}`],
+      ["Bảng tổng hợp tiền công theo nhân viên"],
+      summaryColumns,
+      ...summary.map((row) => summaryColumns.map((column) => row[column])),
+    ];
+    const summarySheet = XLSX.utils.aoa_to_sheet(summaryData);
+    const summaryLastRow = summaryData.length - 1;
+    summarySheet["!merges"] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: summaryColumns.length - 1 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: summaryColumns.length - 1 } },
+    ];
+    summarySheet["!cols"] = summaryColumns.map((column, index) => ({
+      wch: index === 0 ? 24 : column === "Thực nhận" ? 18 : 15,
+    }));
+    applySheetLayout(summarySheet, summaryColumns.length, 2);
+    for (let columnIndex = 2; columnIndex < summaryColumns.length; columnIndex += 1) {
+      for (let rowIndex = 3; rowIndex <= summaryLastRow; rowIndex += 1) {
+        const cell = summarySheet[XLSX.utils.encode_cell({ r: rowIndex, c: columnIndex })];
+        cell.z = columnIndex === 2 ? "0.0" : '#,##0 "đ"';
+      }
+    }
+    XLSX.utils.book_append_sheet(wb, summarySheet, "Tổng hợp lương");
 
     XLSX.writeFile(wb, `TOMTOM_ChamCong_${month}.xlsx`);
-    showNotice("Đã tạo file Excel.");
+      showNotice("Đã tạo file Excel.");
+    } catch (error) {
+      console.error("Không thể xuất Excel:", error);
+      showNotice(`Không thể xuất Excel: ${error.message}`);
+    }
   };
 
   const updateAttendanceField = async (record, field, value) => {
@@ -1419,7 +1530,7 @@ function App() {
               {(user.email || "A").slice(0, 1).toUpperCase()}
             </div>
             <div className="admin-text">
-              <b>Quản trị viên</b>
+              <b>Admin Tom Tom Cute</b>
               <span>{user.email}</span>
             </div>
           </div>
@@ -1494,7 +1605,7 @@ function App() {
               <div>
                 <p className="eyebrow">BẢNG ĐIỀU KHIỂN</p>
                 <h2>
-                  Xin chào, quản trị viên <span>👋</span>
+                  Xin chào, Qbao nhé <span>👋</span>
                 </h2>
                 <p className="muted">
                   Tình hình chấm công trong tháng{" "}
