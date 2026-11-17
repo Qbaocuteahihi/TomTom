@@ -197,10 +197,59 @@ function Schedule({ db, employees, onNotice }) {
   const [taskForm, setTaskForm] = useState({ label: "", color: "#fff500" });
   const [editingTask, setEditingTask] = useState(null);
   const [saving, setSaving] = useState("");
+  const [highlightedEmployeeId, setHighlightedEmployeeId] = useState(null);
   const days = Array.from({ length: 7 }, (_, index) =>
     shiftDate(week, index),
   );
   const activeEmployees = employees.filter((employee) => employee.active !== false);
+
+  const shiftCountsByEmployee = useMemo(() => {
+    const map = new Map();
+    activeEmployees.forEach((employee) => {
+      map.set(employee.id, {
+        id: employee.id,
+        name: employee.name,
+        total: 0,
+        shifts: { ca1: 0, ca2: 0, ca3: 0 },
+        daysWorked: new Set(),
+      });
+    });
+
+    assignments.forEach((item) => {
+      if (!item.employeeId) return;
+      let entry = map.get(item.employeeId);
+      if (!entry) {
+        entry = {
+          id: item.employeeId,
+          name: item.employeeName || "Nhân viên",
+          total: 0,
+          shifts: { ca1: 0, ca2: 0, ca3: 0 },
+          daysWorked: new Set(),
+        };
+        map.set(item.employeeId, entry);
+      }
+      entry.total += 1;
+      if (item.shiftId && entry.shifts[item.shiftId] !== undefined) {
+        entry.shifts[item.shiftId] += 1;
+      }
+      if (item.date) {
+        entry.daysWorked.add(item.date);
+      }
+    });
+
+    return map;
+  }, [activeEmployees, assignments]);
+
+  const employeeShiftStats = useMemo(() => {
+    return Array.from(shiftCountsByEmployee.values()).sort(
+      (a, b) => b.total - a.total || a.name.localeCompare(b.name, "vi"),
+    );
+  }, [shiftCountsByEmployee]);
+
+  const totalShiftsCount = assignments.length;
+  const activeEmpCount = activeEmployees.length;
+  const avgShiftsPerEmp =
+    activeEmpCount > 0 ? (totalShiftsCount / activeEmpCount).toFixed(1) : 0;
 
   useEffect(() => {
     if (!db || !week) return;
@@ -459,6 +508,91 @@ function Schedule({ db, employees, onNotice }) {
         2 ca trong một ngày; các ca đã xếp trước đó vẫn được giữ lại.
       </div>
 
+      <div className="panel schedule-balance-panel schedule-edit-control">
+        <div className="panel-heading">
+          <div>
+            <div className="schedule-balance-title">
+              <Users size={18} />
+              <h3>Cân bằng ca làm trong tuần</h3>
+            </div>
+            <p className="muted">
+              Tổng số ca đã xếp theo từng nhân viên trong tuần ({days[0].split("-").reverse().join("/")} – {days[6].split("-").reverse().join("/")}). Bấm vào nhân viên để làm nổi bật vị trí ca trên lịch.
+            </p>
+          </div>
+          <div className="schedule-balance-stats">
+            <div className="schedule-stat-chip">
+              <span>Tổng ca tuần:</span>
+              <b>{totalShiftsCount} ca</b>
+            </div>
+            <div className="schedule-stat-chip">
+              <span>Trung bình:</span>
+              <b>{avgShiftsPerEmp} ca/người</b>
+            </div>
+            {highlightedEmployeeId && (
+              <button
+                type="button"
+                className="btn small secondary"
+                onClick={() => setHighlightedEmployeeId(null)}
+              >
+                <X size={13} /> Bỏ lọc nổi bật
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="schedule-balance-grid">
+          {employeeShiftStats.map((stat) => {
+            const isSelected = highlightedEmployeeId === stat.id;
+            return (
+              <button
+                key={stat.id}
+                type="button"
+                className={`schedule-employee-card ${isSelected ? "is-active" : ""} ${stat.total === 0 ? "is-zero" : ""}`}
+                onClick={() =>
+                  setHighlightedEmployeeId((prev) =>
+                    prev === stat.id ? null : stat.id,
+                  )
+                }
+                title={
+                  isSelected
+                    ? "Bấm để bỏ làm nổi bật"
+                    : `Bấm để làm nổi bật ca của ${stat.name} trên bảng`
+                }
+              >
+                <div className="schedule-employee-card-header">
+                  <div className="avatar small pale">
+                    {stat.name.slice(0, 1).toUpperCase()}
+                  </div>
+                  <div className="schedule-employee-info">
+                    <b>{stat.name}</b>
+                    <small>{stat.daysWorked.size} ngày có ca</small>
+                  </div>
+                  <span
+                    className={`schedule-total-badge ${stat.total === 0 ? "zero" : stat.total >= 5 ? "high" : "normal"}`}
+                  >
+                    {stat.total} ca
+                  </span>
+                </div>
+                <div className="schedule-shift-breakdown">
+                  <span title="Ca 1 (06:00 – 12:00)">
+                    <i style={{ backgroundColor: "#2563eb" }} /> Ca 1:{" "}
+                    <b>{stat.shifts.ca1}</b>
+                  </span>
+                  <span title="Ca 2 (12:00 – 17:00)">
+                    <i style={{ backgroundColor: "#a16207" }} /> Ca 2:{" "}
+                    <b>{stat.shifts.ca2}</b>
+                  </span>
+                  <span title="Ca 3 (17:00 – 22:00)">
+                    <i style={{ backgroundColor: "#7e22ce" }} /> Ca 3:{" "}
+                    <b>{stat.shifts.ca3}</b>
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <div className="panel schedule-panel">
         <div className="table-wrap schedule-table-wrap">
           <table className="schedule-table">
@@ -502,20 +636,38 @@ function Schedule({ db, employees, onNotice }) {
                             : undefined
                         }
                       >
-                        <div className="schedule-cell">
-                          {rows.map((assignment) => (
-                            <div className="schedule-person" key={assignment.id}>
-                              <span>{assignment.employeeName}</span>
-                              <button
-                                className="schedule-edit-control"
-                                type="button"
-                                onClick={() => removeFromSchedule(assignment)}
-                                aria-label={`Bỏ ${assignment.employeeName}`}
+                        <div
+                          className={`schedule-cell${highlightedEmployeeId ? " has-highlight" : ""}`}
+                        >
+                          {rows.map((assignment) => {
+                            const empCount =
+                              shiftCountsByEmployee.get(assignment.employeeId)
+                                ?.total || 0;
+                            const isEmpHighlighted =
+                              highlightedEmployeeId === assignment.employeeId;
+                            return (
+                              <div
+                                className={`schedule-person${isEmpHighlighted ? " is-highlighted" : ""}`}
+                                key={assignment.id}
+                                title={`${assignment.employeeName} · Đã xếp ${empCount} ca tuần này`}
                               >
-                                <X size={12} />
-                              </button>
-                            </div>
-                          ))}
+                                <span className="schedule-person-name">
+                                  {assignment.employeeName}
+                                </span>
+                                <small className="schedule-person-badge schedule-edit-control">
+                                  {empCount} ca
+                                </small>
+                                <button
+                                  className="schedule-edit-control"
+                                  type="button"
+                                  onClick={() => removeFromSchedule(assignment)}
+                                  aria-label={`Bỏ ${assignment.employeeName}`}
+                                >
+                                  <X size={12} />
+                                </button>
+                              </div>
+                            );
+                          })}
                           <select
                             className="schedule-edit-control"
                             value=""
@@ -526,11 +678,37 @@ function Schedule({ db, employees, onNotice }) {
                             aria-label={`Xếp nhân viên ${shift.name} ngày ${day}`}
                           >
                             <option value="">+ Xếp nhân viên</option>
-                            {activeEmployees.map((employee) => (
-                              <option key={employee.id} value={employee.id}>
-                                {employee.name}
-                              </option>
-                            ))}
+                            {activeEmployees.map((employee) => {
+                              const empCount =
+                                shiftCountsByEmployee.get(employee.id)?.total || 0;
+                              const sameDay = assignments.filter(
+                                (item) =>
+                                  item.date === day &&
+                                  item.employeeId === employee.id,
+                              );
+                              const inCurrentShift = sameDay.some(
+                                (item) => item.shiftId === shift.id,
+                              );
+                              const reachedDayLimit = sameDay.length >= 2;
+                              const disabled = inCurrentShift || reachedDayLimit;
+
+                              let note = `(${empCount} ca)`;
+                              if (inCurrentShift) {
+                                note = `(${empCount} ca · đã có ca này)`;
+                              } else if (reachedDayLimit) {
+                                note = `(${empCount} ca · tối đa 2 ca/ngày)`;
+                              }
+
+                              return (
+                                <option
+                                  key={employee.id}
+                                  value={employee.id}
+                                  disabled={disabled}
+                                >
+                                  {employee.name} {note}
+                                </option>
+                              );
+                            })}
                           </select>
                           {cleaning ? (
                             <div
@@ -583,6 +761,32 @@ function Schedule({ db, employees, onNotice }) {
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr>
+                <th className="schedule-shift-col">
+                  <b>TỔNG CA NGÀY</b>
+                  <small>Số ca làm việc</small>
+                </th>
+                {days.map((day) => {
+                  const dayAssignments = assignments.filter(
+                    (item) => item.date === day,
+                  );
+                  const uniqueEmployees = new Set(
+                    dayAssignments.map((a) => a.employeeId),
+                  ).size;
+                  return (
+                    <td key={day} className="schedule-day-total-cell">
+                      <div className="schedule-day-total">
+                        <b>{dayAssignments.length} ca</b>
+                        <small className="muted schedule-edit-control">
+                          {uniqueEmployees} nhân sự
+                        </small>
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            </tfoot>
           </table>
         </div>
       </div>
@@ -613,7 +817,7 @@ function Schedule({ db, employees, onNotice }) {
         </div>
       </div>
 
-      <div className="panel cleaning-editor">
+      <div className="panel cleaning-editor schedule-edit-control">
         <div className="panel-heading">
           <div>
             <h3>Quản lý công việc vệ sinh</h3>
